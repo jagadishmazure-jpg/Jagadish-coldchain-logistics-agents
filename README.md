@@ -16,6 +16,7 @@
 - Orchestrator combines three tools (telemetry SQL, SOP retrieval, weather) and returns an answer with sources, a tier from T1 to T4, and a confirmation token for any high-impact action.
 - Real run: 25 temperature-breach rows with the breach protocol quoted in whole sentences, a T4 escalation held for confirmation, and three unsafe SQL statements (a stacked DROP, a base table, the schema table) blocked with reason codes.
 - Review fixes: SOP quotes were cut mid-sentence and retrieval missed the right SOP for two questions; now sentence-bounded excerpts and a heading boost, with tests.
+- Security review (2026-10-18): three ways to read base tables past the view allowlist, a row cap any `LIMIT` could skip, and missed phone/SSN formats in feedback redaction; fixed with a SQLite authorizer, a fetch-time cap and new patterns. 82 tests.
 
 ## Purpose
 
@@ -62,8 +63,9 @@ Architecture: [knowledge/architecture.md](knowledge/architecture.md).
 
 **Feedback** (`coldchain/feedback.py`): a thumbs up or down per turn, plus a
 required correction on a thumbs-down, is appended to the same hash-chained
-audit log, so `verify_chain` covers feedback too. Emails and numbers of 10 or
-more digits in the correction are replaced before it is written.
+audit log, so `verify_chain` covers feedback too. Emails, phone numbers (including
+`(555) 123-4567`), SSNs and numbers of 10 or more digits in the correction
+are replaced before it is written.
 
 ## Real code and output
 
@@ -101,7 +103,7 @@ for sql in ["SELECT * FROM v_temp_breaches; DROP TABLE telemetry",
         print("  BLOCKED", sql, "->", e)
 print("\naudit chain intact:", orch.audit.verify_chain())
 
-# Feedback capture: thumbs up/down into the same hash-chained audit log, emails and long numbers redacted.
+# Feedback capture: thumbs up/down into the same hash-chained audit log, emails, phones, SSNs and long numbers redacted.
 fb_log = AuditLog()
 capture_feedback(fb_log, session_id="s-demo", turn_id="t1", rating="up")
 fb = capture_feedback(fb_log, session_id="s-demo", turn_id="t2", rating="down",
@@ -161,18 +163,18 @@ Test suite size (real collection, re-checked in CI):
 
 <!-- run: python scripts/count_tests.py -->
 ```text
-67 tests collected
+82 tests collected
 ```
 <!-- /run -->
 
 ## Guardrails
 
-- Read-only access through allowlisted views; one statement; base and system tables refused.
+- Read-only access through allowlisted views; one statement; base and system tables refused by the gateway's rules and, behind them, by a SQLite authorizer that only allows reads of the four views. At most 100 rows are fetched.
 - SQL comes from templates, not from a model.
 - SOP text is quoted with a citation, not paraphrased.
 - Reroutes and other T3/T4 actions return a confirmation token; nothing is executed automatically.
 - Every step is written to a hash-chained audit log.
-- Feedback corrections are capped at 2,000 characters, and emails and long numbers are redacted before they reach the append-only audit log.
+- Feedback corrections are capped at 2,000 characters, and emails, phone numbers (including `(555) 123-4567`), SSNs and long numbers are redacted before they reach the append-only audit log.
 
 ## Limitations
 
@@ -180,7 +182,15 @@ Test suite size (real collection, re-checked in CI):
 - SOP retrieval is keyword based; it works on these four documents, not a large library.
 - Synthetic telemetry is dated 2021 to 2024, so the views are not 'live'.
 - Weather is a fake backend in the demo and tests.
-- Feedback redaction is two regexes (emails, 10+ digit numbers), not a full PII detector.
+- Feedback redaction is four regexes (emails, phone numbers, SSN shape, 10+ digit numbers), not a full PII detector; names and street addresses are not caught.
+
+## Security review (2026-10-18)
+
+The batch-1/2 domain repos copied this spine; reviewing them found gateway and redaction bugs that turned out to start here. Reproduced in this repo, fixed, and pinned by tests (`tests/test_gateway_backstop.py`, review tests in `tests/test_feedback.py`):
+
+1. **Gateway allowlist bypass.** The gateway only checked names written right after `FROM`/`JOIN` plus whitespace. `SELECT * FROM v_fleet_status, trucks` (comma join), `SELECT name, sql FROM "sqlite_master"` (quoted name) and `SELECT * FROM/**/trucks` (comment as whitespace) all read base tables or the schema. A SQLite authorizer (`coldchain/authz.py`, ADR 0001) now lets the engine refuse any read that is not one of the four views; denials still cite `SEC-VIEW-03`.
+2. **Row cap skipped by any caller-written LIMIT.** `MAX_LIMIT` was only appended when the text had no `LIMIT`, so `... LIMIT 100000` on a view self-join returned 15,376 rows. Rows past 100 are now never fetched (`fetchmany`), whatever LIMIT the query carries.
+3. **Feedback redaction missed common phone and SSN formats.** `(555) 123-4567` and `+1 (555) 123-4567` broke the digit-run pattern on the `) ` and `123-45-6789` is only 9 digits, so all three were stored in the audit log. Phone and SSN patterns were added; dates and short IDs are still left alone (tested).
 
 ## Built vs planned
 
@@ -199,7 +209,8 @@ Test suite size (real collection, re-checked in CI):
 
 | Threat | Mitigation in this repo | Status |
 |---|---|---|
-| Agent runs destructive or broad SQL | Template SQL, one SELECT, allowlisted views | Built |
+| Agent runs destructive or broad SQL | Template SQL, one SELECT, allowlisted views enforced by a SQLite authorizer, 100-row fetch cap | Built |
+| Personal data in feedback text | Email, phone, SSN and long-number redaction before the audit log | Built |
 | Agent reroutes a shipment on its own | Confirmation gate for T3/T4 actions | Built |
 | Misquoted procedure | Whole-sentence excerpts with citations | Built |
 | Tampered decision record | Hash-chained audit | Built |
@@ -237,6 +248,7 @@ run; it is a plan.
 - [SOPs](docs/sops/)
 - [Implementation guide (Azure)](docs/implementation-guide.md)
 - [Interview points](docs/interview-points.md)
+- [ADR 0001: SQLite authorizer backstop](docs/adr/0001-sqlite-authorizer-backstop.md)
 - [Security policy](SECURITY.md)
 
 ## Project layout

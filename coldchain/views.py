@@ -7,12 +7,17 @@ stable rule ID so the audit log explains *why* access was refused.
 Rule IDs:
   SEC-SELECT-01  Only single SELECT statements are permitted.
   SEC-WRITE-02   Write/DDL keywords are denied at the gateway.
-  SEC-VIEW-03    Only allowlisted read-only views may be queried.
+  SEC-VIEW-03    Only allowlisted read-only views may be queried
+                 (backed by a SQLite authorizer, see coldchain/authz.py).
+
+At most MAX_LIMIT rows are ever fetched, whatever LIMIT the caller wrote.
 """
 from __future__ import annotations
 
 import re
 import sqlite3
+
+from . import authz
 
 VIEW_DEFS = {
     "v_fleet_status": (
@@ -69,7 +74,7 @@ _FROM_RE = re.compile(r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)",
                       re.IGNORECASE)
 _SELECT_RE = re.compile(r"^\s*SELECT\b", re.IGNORECASE | re.DOTALL)
 _LIMIT_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
-_COMMENT_RE = re.compile(r"--[^\n]*")
+_COMMENT_RE = re.compile(r"--[^\n]*|/\*.*?(?:\*/|$)", re.S)
 _LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
 
 
@@ -98,7 +103,7 @@ class SecureGateway:
         self.conn = conn
 
     def execute(self, sql: str, params: tuple = ()) -> list[dict]:
-        scrubbed = _COMMENT_RE.sub("", sql).strip()
+        scrubbed = _COMMENT_RE.sub(" ", sql).strip()
         if not _SELECT_RE.match(scrubbed):
             raise SecurityDenial(
                 "SEC-SELECT-01",
@@ -123,6 +128,21 @@ class SecureGateway:
         statement = scrubbed
         if not _LIMIT_RE.search(statement):
             statement = f"{statement} LIMIT {self.MAX_LIMIT}"
-        cursor = self.conn.execute(statement, params)
-        columns = [d[0] for d in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        # Engine-level backstop: the regex above cannot see comma joins or
+        # double-quoted names, so SQLite itself refuses any non-view read.
+        with authz.views_only(self.conn, VIEW_DEFS) as denied:
+            try:
+                cursor = self.conn.execute(statement, params)
+            except sqlite3.DatabaseError:
+                if denied:
+                    raise SecurityDenial(
+                        "SEC-VIEW-03",
+                        f"Access to '{denied[0]}' denied: only allowlisted "
+                        f"read-only views may be queried "
+                        f"({', '.join(sorted(VIEW_DEFS))}).") from None
+                raise
+            columns = [d[0] for d in cursor.description]
+            # A caller-written LIMIT can be larger than the cap; rows past
+            # MAX_LIMIT are never fetched.
+            rows = cursor.fetchmany(self.MAX_LIMIT)
+        return [dict(zip(columns, row)) for row in rows]

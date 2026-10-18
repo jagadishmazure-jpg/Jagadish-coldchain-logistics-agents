@@ -23,12 +23,12 @@
 
 ## Guardrails to keep when going live
 
-- Read-only access through allowlisted views; one statement; base and system tables refused.
+- Read-only access through allowlisted views; one statement; base and system tables refused by the gateway's rules and, behind them, by a SQLite authorizer that only allows reads of the four views. At most 100 rows are fetched.
 - SQL comes from templates, not from a model.
 - SOP text is quoted with a citation, not paraphrased.
 - Reroutes and other T3/T4 actions return a confirmation token; nothing is executed automatically.
 - Every step is written to a hash-chained audit log.
-- Feedback corrections are capped at 2,000 characters, and emails and long numbers are redacted before they reach the append-only audit log.
+- Feedback corrections are capped at 2,000 characters, and emails, phone numbers (including `(555) 123-4567`), SSNs and long numbers are redacted before they reach the append-only audit log.
 
 ## What to measure before calling it production-ready
 
