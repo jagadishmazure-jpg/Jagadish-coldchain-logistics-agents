@@ -16,7 +16,7 @@
 - Orchestrator combines three tools (telemetry SQL, SOP retrieval, weather) and returns an answer with sources, a tier from T1 to T4, and a confirmation token for any high-impact action.
 - Real run: 25 temperature-breach rows with the breach protocol quoted in whole sentences, a T4 escalation held for confirmation, and three unsafe SQL statements (a stacked DROP, a base table, the schema table) blocked with reason codes.
 - Review fixes: SOP quotes were cut mid-sentence and retrieval missed the right SOP for two questions; now sentence-bounded excerpts and a heading boost, with tests.
-- Security review (2026-10-18): three ways to read base tables past the view allowlist, a row cap any `LIMIT` could skip, and missed phone/SSN formats in feedback redaction; fixed with a SQLite authorizer, a fetch-time cap and new patterns. 82 tests.
+- Security review (2026-10-18): three ways to read base tables past the view allowlist, a row cap any `LIMIT` could skip, and missed phone/SSN formats in feedback redaction; fixed with a SQLite authorizer, a fetch-time cap and new patterns. 96 tests.
 
 ## Purpose
 
@@ -163,7 +163,7 @@ Test suite size (real collection, re-checked in CI):
 
 <!-- run: python scripts/count_tests.py -->
 ```text
-82 tests collected
+96 tests collected
 ```
 <!-- /run -->
 
@@ -191,6 +191,23 @@ The batch-1/2 domain repos copied this spine; reviewing them found gateway and r
 1. **Gateway allowlist bypass.** The gateway only checked names written right after `FROM`/`JOIN` plus whitespace. `SELECT * FROM v_fleet_status, trucks` (comma join), `SELECT name, sql FROM "sqlite_master"` (quoted name) and `SELECT * FROM/**/trucks` (comment as whitespace) all read base tables or the schema. A SQLite authorizer (`coldchain/authz.py`, ADR 0001) now lets the engine refuse any read that is not one of the four views; denials still cite `SEC-VIEW-03`.
 2. **Row cap skipped by any caller-written LIMIT.** `MAX_LIMIT` was only appended when the text had no `LIMIT`, so `... LIMIT 100000` on a view self-join returned 15,376 rows. Rows past 100 are now never fetched (`fetchmany`), whatever LIMIT the query carries.
 3. **Feedback redaction missed common phone and SSN formats.** `(555) 123-4567` and `+1 (555) 123-4567` broke the digit-run pattern on the `) ` and `123-45-6789` is only 9 digits, so all three were stored in the audit log. Phone and SSN patterns were added; dates and short IDs are still left alone (tested).
+
+### Authorizer template sync (2026-10-18)
+
+The SQLite authorizer was updated to the shared strict, view-aware version.
+A base-table read is allowed only when SQLite reports it on behalf of one of
+the allowed views (the authorizer's view-name argument). A read with no view
+name is denied. `sqlite_master` is always denied, even if listed, and so is
+`load_extension`. None of this repo's views hit the false denial, so the change is preventive here.
+`tests/test_authorizer_sync.py` drives the authorizer directly, independent
+of the text check. It covers comma joins and comment-obfuscated joins with a
+base table, every view, and view self-joins.
+
+Known residual: a read that uses no columns of a table behind a view is
+allowed, because SQLite reports the unused side of a view self-join the same
+way. So `SELECT count(*) FROM <that table>` or `EXISTS (SELECT 1 FROM ...)`
+can still reveal a row count, but no column data. Any column reference is
+denied.
 
 ## Built vs planned
 
