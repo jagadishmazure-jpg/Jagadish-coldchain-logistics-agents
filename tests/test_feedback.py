@@ -86,3 +86,31 @@ def test_tampered_feedback_breaks_chain():
     assert log.verify_chain()
     log.entries[-1]["payload"]["rating"] = "down"
     assert not log.verify_chain()
+
+
+def test_correction_pii_redacted_before_audit():
+    from coldchain.audit import AuditLog
+    from coldchain.feedback import capture_feedback, list_feedback
+
+    log = AuditLog()
+    capture_feedback(log, session_id="s1", turn_id="t1", rating="down",
+                     correction="call me on +1 555 010 2030 or mail ana@example.com, card 4111111111111111")
+    stored = str(list_feedback(log))
+    assert "ana@example.com" not in stored and "4111111111111111" not in stored and "555 010" not in stored
+    assert "[EMAIL]" in stored and stored.count("[NUMBER]") == 2
+    assert log.verify_chain()
+
+
+def test_overlong_correction_rejected():
+    from coldchain.audit import AuditLog
+    from coldchain.feedback import MAX_CORRECTION_CHARS, FeedbackError, capture_feedback
+
+    with pytest.raises(FeedbackError):
+        capture_feedback(AuditLog(), session_id="s", turn_id="t", rating="down",
+                         correction="x" * (MAX_CORRECTION_CHARS + 1))
+
+
+def test_short_numbers_in_corrections_are_kept():
+    from coldchain.feedback import redact_correction
+
+    assert redact_correction("SKU 1042 was 3 days late") == ("SKU 1042 was 3 days late", 0)

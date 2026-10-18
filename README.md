@@ -60,12 +60,19 @@ and section citation.
 risk class, mirroring SOP 04; high-impact actions get a gate token.
 Architecture: [knowledge/architecture.md](knowledge/architecture.md).
 
+**Feedback** (`coldchain/feedback.py`): a thumbs up or down per turn, plus a
+required correction on a thumbs-down, is appended to the same hash-chained
+audit log, so `verify_chain` covers feedback too. Emails and numbers of 10 or
+more digits in the correction are replaced before it is written.
+
 ## Real code and output
 
 ```python
 """Dispatcher questions against a synthetic reefer fleet (in-memory SQLite)."""
 from pathlib import Path
 
+from coldchain.audit import AuditLog
+from coldchain.feedback import capture_feedback, list_feedback
 from coldchain.orchestrator import Orchestrator
 from coldchain.sop_rag import SopIndex, load_sops
 from coldchain.telemetry import build_dataset
@@ -93,6 +100,14 @@ for sql in ["SELECT * FROM v_temp_breaches; DROP TABLE telemetry",
     except SecurityDenial as e:
         print("  BLOCKED", sql, "->", e)
 print("\naudit chain intact:", orch.audit.verify_chain())
+
+# Feedback capture: thumbs up/down into the same hash-chained audit log, emails and long numbers redacted.
+fb_log = AuditLog()
+capture_feedback(fb_log, session_id="s-demo", turn_id="t1", rating="up")
+fb = capture_feedback(fb_log, session_id="s-demo", turn_id="t2", rating="down",
+                      correction="wrong ETA, call me on +1 555 010 2030")
+print(f"Feedback: {len(list_feedback(fb_log))} entries, stored correction {fb['payload']['correction']!r}, "
+      f"redactions {fb['payload']['pii_redactions']}, chain verifies: {fb_log.verify_chain()}")
 ```
 
 Output of `python examples/demo.py` (real run, re-checked in CI):
@@ -127,6 +142,7 @@ SQL guard (agent-issued SQL that must be refused):
   BLOCKED SELECT name FROM sqlite_master -> [SEC-VIEW-03] Access to 'sqlite_master' denied: only allowlisted read-only views may be queried (v_delay_risk, v_fleet_status, v_port_impact, v_temp_breaches).
 
 audit chain intact: True
+Feedback: 2 entries, stored correction 'wrong ETA, call me on [NUMBER]', redactions 1, chain verifies: True
 ```
 <!-- /run -->
 
@@ -145,7 +161,7 @@ Test suite size (real collection, re-checked in CI):
 
 <!-- run: python scripts/count_tests.py -->
 ```text
-56 tests collected
+67 tests collected
 ```
 <!-- /run -->
 
@@ -156,6 +172,7 @@ Test suite size (real collection, re-checked in CI):
 - SOP text is quoted with a citation, not paraphrased.
 - Reroutes and other T3/T4 actions return a confirmation token; nothing is executed automatically.
 - Every step is written to a hash-chained audit log.
+- Feedback corrections are capped at 2,000 characters, and emails and long numbers are redacted before they reach the append-only audit log.
 
 ## Limitations
 
@@ -163,6 +180,7 @@ Test suite size (real collection, re-checked in CI):
 - SOP retrieval is keyword based; it works on these four documents, not a large library.
 - Synthetic telemetry is dated 2021 to 2024, so the views are not 'live'.
 - Weather is a fake backend in the demo and tests.
+- Feedback redaction is two regexes (emails, 10+ digit numbers), not a full PII detector.
 
 ## Built vs planned
 
@@ -173,6 +191,7 @@ Test suite size (real collection, re-checked in CI):
 | SOP retrieval with citations | Built | `coldchain/sop_rag.py` |
 | Escalation tiers and confirmation gate | Built | `coldchain/escalation.py` |
 | Orchestrator and audit | Built | `coldchain/orchestrator.py`, `coldchain/audit.py` |
+| User feedback in the audit chain, with redaction | Built | `coldchain/feedback.py` |
 | Model-based intent and answer writing | Planned | docs/implementation-guide.md |
 | Live telematics feed | Planned | not started |
 
@@ -208,6 +227,7 @@ run; it is a plan.
 | [Jagadish-text2sql-data-agent](https://github.com/jagadishmazure-jpg/Jagadish-text2sql-data-agent) | Text-to-SQL in more depth |
 | [Jagadish-governed-data-agent](https://github.com/jagadishmazure-jpg/Jagadish-governed-data-agent) | Governed data access for agents |
 | [Jagadish-event-driven-agents](https://github.com/jagadishmazure-jpg/Jagadish-event-driven-agents) | Reacting to telemetry events |
+| [Jagadish-agent-feedback-loop](https://github.com/jagadishmazure-jpg/Jagadish-agent-feedback-loop) | Turns captured feedback into eval cases and a regression gate |
 
 ## Documentation
 
@@ -231,6 +251,7 @@ coldchain/
   escalation.py   tiers, confirmation gate
   orchestrator.py routing, tools, answer
   audit.py        hash-chained log
+  feedback.py     thumbs up/down + correction into the log
 docs/sops/        four SOPs
 examples/demo.py  the run shown above
 tests/            offline pytest suite

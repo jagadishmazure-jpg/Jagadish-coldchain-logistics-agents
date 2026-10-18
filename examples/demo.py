@@ -1,6 +1,8 @@
 """Dispatcher questions against a synthetic reefer fleet (in-memory SQLite)."""
 from pathlib import Path
 
+from coldchain.audit import AuditLog
+from coldchain.feedback import capture_feedback, list_feedback
 from coldchain.orchestrator import Orchestrator
 from coldchain.sop_rag import SopIndex, load_sops
 from coldchain.telemetry import build_dataset
@@ -28,3 +30,11 @@ for sql in ["SELECT * FROM v_temp_breaches; DROP TABLE telemetry",
     except SecurityDenial as e:
         print("  BLOCKED", sql, "->", e)
 print("\naudit chain intact:", orch.audit.verify_chain())
+
+# Feedback capture: thumbs up/down into the same hash-chained audit log, emails and long numbers redacted.
+fb_log = AuditLog()
+capture_feedback(fb_log, session_id="s-demo", turn_id="t1", rating="up")
+fb = capture_feedback(fb_log, session_id="s-demo", turn_id="t2", rating="down",
+                      correction="wrong ETA, call me on +1 555 010 2030")
+print(f"Feedback: {len(list_feedback(fb_log))} entries, stored correction {fb['payload']['correction']!r}, "
+      f"redactions {fb['payload']['pii_redactions']}, chain verifies: {fb_log.verify_chain()}")

@@ -28,6 +28,7 @@
 - SOP text is quoted with a citation, not paraphrased.
 - Reroutes and other T3/T4 actions return a confirmation token; nothing is executed automatically.
 - Every step is written to a hash-chained audit log.
+- Feedback corrections are capped at 2,000 characters, and emails and long numbers are redacted before they reach the append-only audit log.
 
 ## What to measure before calling it production-ready
 
