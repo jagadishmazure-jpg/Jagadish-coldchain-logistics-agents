@@ -6,7 +6,6 @@ from urllib.error import URLError
 
 import pytest
 
-from coldchain import audit as audit_mod
 from coldchain import escalation as esc_mod
 from coldchain import text2sql
 from coldchain.audit import AuditLog
@@ -14,9 +13,8 @@ from coldchain.escalation import ConfirmationGate, guard_action
 from coldchain.orchestrator import Orchestrator
 from coldchain.sop_rag import SopIndex, answer_question, load_sops
 from coldchain.telemetry import RISK_CLASSES, build_dataset, classify_risk
-from coldchain.views import SecureGateway, SecurityDenial, VIEW_DEFS, create_views
-from coldchain.weather import (FakeWeather, OpenMeteoBackend,
-                               WeatherResult, derive_corridor_risk)
+from coldchain.views import SecureGateway, SecurityDenial, create_views
+from coldchain.weather import FakeWeather, OpenMeteoBackend, WeatherResult, derive_corridor_risk
 
 SOP_DIR = Path(__file__).resolve().parent.parent / "docs" / "sops"
 
@@ -437,3 +435,41 @@ def test_audit_hash_linking():
     second = log.record("b", {})
     assert second["prev_hash"] == first["hash"]
     assert first["prev_hash"] == AuditLog.GENESIS_HASH
+
+
+# --- SOP quote quality (added after review: quotes were cut mid-sentence) ---
+def test_excerpt_keeps_whole_sentences():
+    from coldchain.sop_rag import excerpt
+    text = "First rule is here.\nIt wraps onto a second line. Second sentence follows! Third one?"
+    out = excerpt(text, max_chars=60)
+    assert out == "First rule is here. It wraps onto a second line."
+    assert out.endswith((".", "!", "?"))
+
+
+def test_excerpt_never_cuts_first_sentence():
+    from coldchain.sop_rag import excerpt
+    long = "word " * 100 + "end."
+    assert excerpt(long, max_chars=20).endswith("end.")
+
+
+def test_every_sop_quote_ends_on_a_sentence_boundary():
+    from pathlib import Path
+
+    from coldchain.sop_rag import SopIndex, answer_question, load_sops
+    sops = Path(__file__).resolve().parent.parent / "docs" / "sops"
+    index = SopIndex(load_sops(sops))
+    ans = answer_question("what does the SOP say about the breach protocol?", index)
+    for line in ans.text.splitlines()[1:]:
+        quote = line[2:line.rindex(" [")]
+        assert quote.endswith((".", "!", "?", ")")), quote
+
+
+def test_heading_boost_routes_queries_to_the_right_sop():
+    from pathlib import Path
+
+    from coldchain.sop_rag import SopIndex, answer_question, load_sops
+    sops = Path(__file__).resolve().parent.parent / "docs" / "sops"
+    index = SopIndex(load_sops(sops))
+    assert answer_question("breach protocol", index).sources[0].startswith("sop-02")
+    assert answer_question("escalation tiers for delays", index).sources[0].startswith("sop-04")
+    assert answer_question("port diversion triggers", index).sources[0].startswith("sop-03")

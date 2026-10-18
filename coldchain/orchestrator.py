@@ -101,7 +101,7 @@ class Orchestrator:
                 continue
             rows.extend(result["rows"])
             sources.append(f"view {plan['view']}")
-            note = (f" (simplified retry after a SQL error)"
+            note = (" (simplified retry after a SQL error)"
                     if result["retried"] else "")
             sections.append(
                 f"Telemetry — {plan['description']}{note}: "
