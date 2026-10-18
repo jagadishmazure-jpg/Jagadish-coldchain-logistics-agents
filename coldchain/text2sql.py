@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import sqlite3
 
-from .views import SecureGateway, VIEW_COLUMNS, VIEW_DEFS
+from .views import VIEW_COLUMNS, VIEW_DEFS, SecureGateway
 
 MAX_ROWS = 100
 

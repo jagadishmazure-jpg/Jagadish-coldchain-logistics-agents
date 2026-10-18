@@ -39,14 +39,12 @@ def load_sops(sop_dir: str | Path) -> list[Chunk]:
     """Chunk every docs/sops/*.md file by its ## sections."""
     chunks: list[Chunk] = []
     for path in sorted(Path(sop_dir).glob("*.md")):
-        title = path.stem
         section = "Overview"
         buffer: list[str] = []
         for line in path.read_text(encoding="utf-8").splitlines():
             title_match = _TITLE_RE.match(line)
             if title_match:
-                title = title_match.group(1).strip()
-                continue
+                continue  # the file title is not a section
             header_match = _HEADER_RE.match(line)
             if header_match:
                 if buffer:
@@ -70,7 +68,10 @@ class SopIndex:
         self._vectors: list[dict[str, float]] = []
         self._norms: list[float] = []
         for chunk in chunks:
-            tokens = tokenize(chunk.text)
+            # Section headings and the file name say what a chunk is about,
+            # so their words are counted twice (a small, deterministic boost).
+            heading = tokenize(chunk.section + " " + chunk.doc.replace("-", " "))
+            tokens = tokenize(chunk.text) + heading * 2
             counts: dict[str, int] = {}
             for token in tokens:
                 counts[token] = counts.get(token, 0) + 1
@@ -108,6 +109,38 @@ class SopIndex:
         return scored[:top_k]
 
 
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def excerpt(text: str, max_chars: int = 280) -> str:
+    """Whole sentences from the start of a chunk, never cut mid-sentence.
+
+    Lines are joined first (SOP paragraphs are hard-wrapped), then sentences
+    are added until the next one would pass ``max_chars``. The first sentence
+    is always kept whole, even if it is longer than ``max_chars``.
+    """
+    items = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        listed = re.match(r"^([-*+]|\d+\.)\s+", s)
+        s = re.sub(r"^([-*+]|\d+\.)\s+", "", s).replace("**", "")
+        if listed and items and not items[-1].endswith((".", "!", "?", ":")):
+            items[-1] += "."  # close the previous list item so it reads as a sentence
+        items.append(s)
+    flat = " ".join(" ".join(items).split())
+    sentences = [s for s in _SENTENCE_END.split(flat) if s]
+    if not sentences:
+        return ""
+    out = sentences[0]
+    for sentence in sentences[1:]:
+        if len(out) + 1 + len(sentence) > max_chars:
+            break
+        out += " " + sentence
+    return out
+
+
 def cite(chunk: Chunk) -> str:
     return f"{chunk.doc} § {chunk.section}"
 
@@ -127,8 +160,7 @@ def answer_question(query: str, index: SopIndex,
         )
     lines = ["Based on the cold-chain SOPs:"]
     for chunk, _score in hits:
-        excerpt = chunk.text.strip().split("\n")[0][:220]
-        lines.append(f"- {excerpt} [{cite(chunk)}]")
+        lines.append(f"- {excerpt(chunk.text)} [{cite(chunk)}]")
     return SopAnswer(
         text="\n".join(lines),
         sources=[cite(chunk) for chunk, _ in hits],
